@@ -2,7 +2,7 @@
 // LocalStorage Persistenz
 // ============================================
 
-import type { Settings, Schedule, StoredData, Player, PointSettings } from '../types';
+import type { Settings, Schedule, StoredData, Player, PointSettings, HandicapSettings, PlayoffSettings, AgeGroupSettings } from '../types';
 
 const STORAGE_KEY = 'dutch-tournament-data';
 
@@ -19,6 +19,7 @@ export function createPlayersFromNames(names: string[]): Player[] {
   return names.map((name, index) => ({
     id: `player-${index + 1}`,
     name: name.trim(),
+    skillRating: 5, // Standard Skill
   }));
 }
 
@@ -37,6 +38,31 @@ export function getDefaultPointSettings(): PointSettings {
   };
 }
 
+// Standard-Handicap-Einstellungen
+export function getDefaultHandicapSettings(): HandicapSettings {
+  return {
+    enabled: false,
+    skillDifferenceMultiplier: 0.5,
+  };
+}
+
+// Standard-Altersgruppen-Einstellungen
+export function getDefaultAgeGroupSettings(): AgeGroupSettings {
+  return {
+    enabled: false,
+    maxAgeDifference: 2, // Maximal 2 Jahre Unterschied zwischen Gegnern
+  };
+}
+
+// Standard-Playoff-Einstellungen
+export function getDefaultPlayoffSettings(): PlayoffSettings {
+  return {
+    enabled: false,
+    topPlayersCount: 8,
+    playoffRounds: 3,
+  };
+}
+
 // Standard-Einstellungen
 export function getDefaultSettings(): Settings {
   return {
@@ -50,6 +76,14 @@ export function getDefaultSettings(): Settings {
     seed: null,
     pointSettings: getDefaultPointSettings(),
     distributeGoalkeepers: true,
+    // Neue Einstellungen
+    tournamentMode: 'standard',
+    matchDuration: 10,
+    useSkillBalancing: false,
+    handicapSettings: getDefaultHandicapSettings(),
+    playoffSettings: getDefaultPlayoffSettings(),
+    teamColors: ['red', 'blue'],
+    ageGroupSettings: getDefaultAgeGroupSettings(),
   };
 }
 
@@ -74,6 +108,36 @@ export function loadFromStorage(): StoredData | null {
     // Migration: Füge fehlende distributeGoalkeepers hinzu
     if (parsed.settings.distributeGoalkeepers === undefined) {
       parsed.settings.distributeGoalkeepers = true;
+    }
+    
+    // Migration: Neue Einstellungen
+    if (!parsed.settings.tournamentMode) {
+      parsed.settings.tournamentMode = 'standard';
+    }
+    if (!parsed.settings.matchDuration) {
+      parsed.settings.matchDuration = 10;
+    }
+    if (parsed.settings.useSkillBalancing === undefined) {
+      parsed.settings.useSkillBalancing = false;
+    }
+    if (!parsed.settings.handicapSettings) {
+      parsed.settings.handicapSettings = getDefaultHandicapSettings();
+    }
+    if (!parsed.settings.playoffSettings) {
+      parsed.settings.playoffSettings = getDefaultPlayoffSettings();
+    }
+    if (!parsed.settings.teamColors) {
+      parsed.settings.teamColors = ['red', 'blue'];
+    }
+    if (!parsed.settings.ageGroupSettings) {
+      parsed.settings.ageGroupSettings = getDefaultAgeGroupSettings();
+    }
+    
+    // Migration: Spieler skillRating
+    for (const player of parsed.settings.players) {
+      if (player.skillRating === undefined) {
+        player.skillRating = 5;
+      }
     }
     
     // Migration: Füge fehlende scorersA/scorersB zu Matches hinzu

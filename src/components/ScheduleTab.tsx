@@ -127,6 +127,8 @@ const MatchRow: React.FC<{
 
   const teamANames = match.teamA.playerIds.map(id => getPlayerName(id, players));
   const teamBNames = match.teamB.playerIds.map(id => getPlayerName(id, players));
+  const teamASubNames = (match.teamA.substitutePlayerIds || []).map(id => getPlayerName(id, players));
+  const teamBSubNames = (match.teamB.substitutePlayerIds || []).map(id => getPlayerName(id, players));
 
   const hasResult = match.scoreA !== null && match.scoreB !== null;
   const teamAWon = hasResult && match.scoreA! > match.scoreB!;
@@ -146,6 +148,11 @@ const MatchRow: React.FC<{
           <div className="team-players">
             {teamANames.map((name, i) => (
               <span key={i} className="player-name">{name}</span>
+            ))}
+            {teamASubNames.map((name, i) => (
+              <span key={`sub-${i}`} className="player-name player-substitute" title="Auswechselspieler">
+                🔄 {name}
+              </span>
             ))}
           </div>
         </td>
@@ -175,6 +182,11 @@ const MatchRow: React.FC<{
             {teamBNames.map((name, i) => (
               <span key={i} className="player-name">{name}</span>
             ))}
+            {teamBSubNames.map((name, i) => (
+              <span key={`sub-${i}`} className="player-name player-substitute" title="Auswechselspieler">
+                🔄 {name}
+              </span>
+            ))}
           </div>
         </td>
         {enableScorerPoints && hasResult && (match.scoreA! > 0 || match.scoreB! > 0) && (
@@ -199,7 +211,7 @@ const MatchRow: React.FC<{
                   <div className="scorer-team-header">
                     Team A ({remainingA > 0 ? `noch ${remainingA} Tor(e) offen` : '✓'})
                   </div>
-                  {match.teamA.playerIds.map(playerId => (
+                  {[...match.teamA.playerIds, ...(match.teamA.substitutePlayerIds || [])].map(playerId => (
                     <ScorerInput
                       key={playerId}
                       playerId={playerId}
@@ -216,7 +228,7 @@ const MatchRow: React.FC<{
                   <div className="scorer-team-header">
                     Team B ({remainingB > 0 ? `noch ${remainingB} Tor(e) offen` : '✓'})
                   </div>
-                  {match.teamB.playerIds.map(playerId => (
+                  {[...match.teamB.playerIds, ...(match.teamB.substitutePlayerIds || [])].map(playerId => (
                     <ScorerInput
                       key={playerId}
                       playerId={playerId}

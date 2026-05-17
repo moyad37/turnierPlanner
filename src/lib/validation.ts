@@ -56,11 +56,20 @@ export function validateSettings(settings: Settings): ValidationResult {
 
   // Spieleranzahl-Validierung
   if (!allowByes) {
-    if (players.length !== playersNeededPerRound) {
+    // Alle Spieler nehmen teil — überschüssige werden als Auswechselspieler verteilt
+    if (players.length < playersNeededPerRound) {
       errors.push(
-        `Ohne Pausen (Byes): Exakt ${playersNeededPerRound} Spieler benötigt ` +
-        `(${teamsPerRound} Teams × ${playersPerTeam} Spieler). ` +
-        `Aktuell: ${players.length} Spieler.`
+        `Zu wenige Spieler: ${players.length} vorhanden, aber mindestens ${playersNeededPerRound} ` +
+        `werden benötigt (${teamsPerRound} Teams × ${playersPerTeam} Spieler).`
+      );
+    } else if (players.length > playersNeededPerRound) {
+      const extraPlayers = players.length - playersNeededPerRound;
+      const teamsWithSub = extraPlayers % teamsPerRound === 0
+        ? teamsPerRound
+        : extraPlayers % teamsPerRound;
+      warnings.push(
+        `${extraPlayers} Spieler werden als Auswechselspieler (🔄) eingeteilt: ` +
+        `${teamsWithSub} Teams bekommen einen zusätzlichen Auswechselspieler.`
       );
     }
   } else {
@@ -94,6 +103,66 @@ export function validateSettings(settings: Settings): ValidationResult {
   // Warnung bei leeren Namen
   if (players.some(p => !p.name.trim())) {
     errors.push('Alle Spieler müssen einen Namen haben.');
+  }
+
+  // ============================================
+  // Altersgruppen-Prüfung
+  // ============================================
+  if (settings.ageGroupSettings?.enabled) {
+    const maxDiff = settings.ageGroupSettings.maxAgeDifference;
+    const playersWithAge = players.filter(p => typeof p.age === 'number');
+    const playersWithoutAge = players.filter(p => typeof p.age !== 'number');
+
+    if (playersWithAge.length === 0) {
+      warnings.push(
+        'Altersgruppen-Prüfung ist aktiviert, aber kein Spieler hat ein Alter angegeben. ' +
+        'Bitte trage die Alter der Spieler ein.'
+      );
+    } else {
+      if (playersWithoutAge.length > 0) {
+        warnings.push(
+          `${playersWithoutAge.length} Spieler haben kein Alter angegeben. ` +
+          'Die Altersgruppen-Prüfung gilt nur für Spieler mit Altersangabe.'
+        );
+      }
+
+      // Altersgruppen bilden: Spieler werden nach Alters-Fenstern gruppiert
+      const groupMap = new Map<number, typeof playersWithAge>();
+      for (const player of playersWithAge) {
+        const groupKey = Math.floor(player.age! / maxDiff);
+        if (!groupMap.has(groupKey)) groupMap.set(groupKey, []);
+        groupMap.get(groupKey)!.push(player);
+      }
+
+      // Warnung: Zu wenige Spieler in einer Altersgruppe für ein vollständiges Team
+      if (groupMap.size > 1) {
+        for (const [groupKey, groupPlayers] of groupMap) {
+          const ageStart = groupKey * maxDiff;
+          const ageEnd = ageStart + maxDiff - 1;
+          if (groupPlayers.length < playersPerTeam) {
+            errors.push(
+              `⚠️ Altersgruppen-Problem: Die Gruppe "${ageStart}–${ageEnd} Jahre" hat nur ` +
+              `${groupPlayers.length} Spieler (benötigt: ${playersPerTeam} pro Team). ` +
+              `Diese Spieler (${groupPlayers.map(p => p.name).join(', ')}) können kein ` +
+              `eigenständiges Team bilden und würden zwangsläufig gegen ältere/jüngere Spieler ` +
+              `antreten. Bitte passe die Teamgröße an oder entferne die Altersgruppen-Prüfung.`
+            );
+          }
+        }
+      }
+
+      // Warnung: Alters-Differenz zu groß innerhalb eines Matches (alle Spieler auf Basis der Gesamtliste)
+      const ages = playersWithAge.map(p => p.age!);
+      const minAge = Math.min(...ages);
+      const maxAge = Math.max(...ages);
+      if (maxAge - minAge > maxDiff && groupMap.size > 1) {
+        warnings.push(
+          `Altersgruppen-Prüfung aktiv: Spieler-Altersspanne ${minAge}–${maxAge} Jahre ` +
+          `(max. erlaubte Differenz: ${maxDiff} Jahre). Der Generator wird versuchen, ` +
+          `altersgemischte Spiele zu vermeiden.`
+        );
+      }
+    }
   }
 
   return {

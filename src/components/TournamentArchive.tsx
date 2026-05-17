@@ -2,7 +2,7 @@
 // Turnier-Archiv Komponente
 // ============================================
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import type { Settings, Schedule } from '../types';
 import type { TournamentIndex } from '../lib/tournamentArchive';
 import {
@@ -15,7 +15,7 @@ import {
   saveImportedTournament,
   renameTournament,
   duplicateTournament,
-} from '../lib/tournamentArchive';
+} from '../lib/cloudArchive';
 
 interface TournamentArchiveProps {
   currentSettings: Settings;
@@ -23,6 +23,7 @@ interface TournamentArchiveProps {
   currentTournamentId: string | null;
   onLoadTournament: (settings: Settings, schedule: Schedule | null, id: string, name: string) => void;
   onNewTournament: () => void;
+  onSaved: (id: string, name: string) => void;
 }
 
 export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
@@ -31,8 +32,11 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
   currentTournamentId,
   onLoadTournament,
   onNewTournament,
+  onSaved,
 }) => {
-  const [index, setIndex] = useState<TournamentIndex>(() => loadTournamentIndex());
+  const [index, setIndex] = useState<TournamentIndex>({ tournaments: [] });
+  const [loading, setLoading] = useState(true);
+  const [cloudError, setCloudError] = useState<string | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -40,26 +44,34 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Turnierliste beim ersten Laden aus Firestore holen
+  useEffect(() => {
+    loadTournamentIndex()
+      .then(idx => { setIndex(idx); setLoading(false); })
+      .catch(() => { setCloudError('Verbindung zu Firebase fehlgeschlagen.'); setLoading(false); });
+  }, []);
+
   const refreshIndex = useCallback(() => {
-    setIndex(loadTournamentIndex());
+    loadTournamentIndex()
+      .then(idx => setIndex(idx))
+      .catch(() => setCloudError('Fehler beim Aktualisieren.'));
   }, []);
 
   // Speichern Dialog öffnen
-  const handleSaveClick = useCallback(() => {
+  const handleSaveClick = useCallback(async () => {
     if (currentTournamentId) {
-      // Existierendes Turnier direkt speichern
-      const tournament = loadTournament(currentTournamentId);
+      const tournament = await loadTournament(currentTournamentId);
       if (tournament) {
-        saveTournament(currentSettings, currentSchedule, tournament.name, currentTournamentId);
+        await saveTournament(currentSettings, currentSchedule, tournament.name, currentTournamentId);
         refreshIndex();
+        onSaved(currentTournamentId, tournament.name);
         alert('Turnier gespeichert!');
       }
     } else {
-      // Neues Turnier - Name abfragen
       setSaveName(`Turnier ${new Date().toLocaleDateString('de-DE')}`);
       setShowSaveDialog(true);
     }
-  }, [currentSettings, currentSchedule, currentTournamentId, refreshIndex]);
+  }, [currentSettings, currentSchedule, currentTournamentId, refreshIndex, onSaved]);
 
   // Als neues Turnier speichern
   const handleSaveAsNew = useCallback(() => {
@@ -68,70 +80,68 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
   }, []);
 
   // Speichern bestätigen
-  const handleSaveConfirm = useCallback(() => {
+  const handleSaveConfirm = useCallback(async () => {
     if (!saveName.trim()) {
       alert('Bitte gib einen Namen ein.');
       return;
     }
-    
-    const id = saveTournament(currentSettings, currentSchedule, saveName.trim());
+    const trimmedName = saveName.trim();
+    const id = await saveTournament(currentSettings, currentSchedule, trimmedName);
     refreshIndex();
     setShowSaveDialog(false);
     setSaveName('');
-    onLoadTournament(currentSettings, currentSchedule, id, saveName.trim());
-  }, [saveName, currentSettings, currentSchedule, refreshIndex, onLoadTournament]);
+    onSaved(id, trimmedName);
+    onLoadTournament(currentSettings, currentSchedule, id, trimmedName);
+  }, [saveName, currentSettings, currentSchedule, refreshIndex, onSaved, onLoadTournament]);
 
   // Turnier laden
-  const handleLoad = useCallback((id: string) => {
-    const tournament = loadTournament(id);
+  const handleLoad = useCallback(async (id: string) => {
+    const tournament = await loadTournament(id);
     if (tournament) {
       onLoadTournament(tournament.settings, tournament.schedule, tournament.id, tournament.name);
     }
   }, [onLoadTournament]);
 
   // Turnier löschen
-  const handleDelete = useCallback((id: string) => {
-    deleteTournament(id);
+  const handleDelete = useCallback(async (id: string) => {
+    await deleteTournament(id);
     refreshIndex();
     setConfirmDelete(null);
-    
-    // Wenn aktuelles Turnier gelöscht wurde
     if (currentTournamentId === id) {
       onNewTournament();
     }
   }, [currentTournamentId, onNewTournament, refreshIndex]);
 
   // Turnier umbenennen
-  const handleRename = useCallback((id: string) => {
+  const handleRename = useCallback(async (id: string) => {
     if (!editName.trim()) return;
-    
-    renameTournament(id, editName.trim());
+    await renameTournament(id, editName.trim());
     refreshIndex();
     setEditingId(null);
     setEditName('');
   }, [editName, refreshIndex]);
 
   // Turnier duplizieren
-  const handleDuplicate = useCallback((id: string) => {
-    const newId = duplicateTournament(id);
-    if (newId) {
-      refreshIndex();
-    }
+  const handleDuplicate = useCallback(async (id: string) => {
+    await duplicateTournament(id);
+    refreshIndex();
   }, [refreshIndex]);
 
   // Als JSON exportieren
-  const handleExportJSON = useCallback((id: string) => {
-    const tournament = loadTournament(id);
+  const handleExportJSON = useCallback(async (id: string) => {
+    const tournament = await loadTournament(id);
     if (tournament) {
       exportTournamentAsJSON(tournament.settings, tournament.schedule, tournament.name);
     }
   }, []);
 
   // Aktuelles Turnier als JSON exportieren
-  const handleExportCurrentJSON = useCallback(() => {
-    const name = currentTournamentId 
-      ? loadTournament(currentTournamentId)?.name || 'Turnier'
-      : 'Turnier';
+  const handleExportCurrentJSON = useCallback(async () => {
+    let name = 'Turnier';
+    if (currentTournamentId) {
+      const t = await loadTournament(currentTournamentId);
+      name = t?.name || 'Turnier';
+    }
     exportTournamentAsJSON(currentSettings, currentSchedule, name);
   }, [currentSettings, currentSchedule, currentTournamentId]);
 
@@ -146,7 +156,7 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
     
     try {
       const tournament = await importTournamentFromJSON(file);
-      const id = saveImportedTournament(tournament);
+      const id = await saveImportedTournament(tournament);
       refreshIndex();
       
       // Direkt laden
@@ -174,7 +184,7 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
   return (
     <div className="tournament-archive">
       <div className="archive-header">
-        <h3>📁 Turnier-Archiv</h3>
+        <h3>☁️ Turnier-Archiv</h3>
         <div className="archive-actions">
           <button type="button" className="btn-archive" onClick={handleSaveClick}>
             💾 Speichern
@@ -229,7 +239,16 @@ export const TournamentArchive: React.FC<TournamentArchiveProps> = ({
       )}
 
       {/* Turnier-Liste */}
-      {index.tournaments.length === 0 ? (
+      {cloudError && (
+        <div className="archive-empty">
+          <p>⚠️ {cloudError}</p>
+        </div>
+      )}
+      {loading ? (
+        <div className="archive-empty">
+          <p>☁️ Lade Turniere…</p>
+        </div>
+      ) : index.tournaments.length === 0 ? (
         <div className="archive-empty">
           <p>Noch keine Turniere gespeichert.</p>
           <p>Klicke auf "Speichern", um das aktuelle Turnier zu archivieren.</p>

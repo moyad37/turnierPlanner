@@ -2,163 +2,190 @@
 // Holländisches Turnier - Hauptkomponente
 // ============================================
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import type { Settings, Schedule } from './types';
-import { generateSchedule, analyzeSchedule } from './lib/generator';
-import { calculatePlayerStats } from './lib/stats';
-import { validateSettings } from './lib/validation';
-import { 
-  loadFromStorage, 
-  saveToStorage, 
-  getDefaultSettings, 
-  clearStorage 
-} from './lib/storage';
+import { useState, useCallback, useEffect } from 'react';
+import { AppProvider, useApp } from './contexts/AppContext';
+import { useTournament } from './hooks/useTournament';
 import { SettingsForm } from './components/SettingsForm';
 import { ScheduleTab } from './components/ScheduleTab';
 import { PlayersTab } from './components/PlayersTab';
 import { ExportButtons } from './components/ExportButtons';
 import { TournamentArchive } from './components/TournamentArchive';
+import { UnsavedChangesModal } from './components/UnsavedChangesModal';
+import { AuthButton } from './components/AuthButton';
+import { onAuthChange } from './lib/firebase';
+import type { User } from 'firebase/auth';
+import type { Settings, Schedule } from './types';
 import './App.css';
 
 type TabType = 'archive' | 'settings' | 'schedule' | 'players';
 
-function App() {
-  // State
-  const [settings, setSettings] = useState<Settings>(() => {
-    const stored = loadFromStorage();
-    return stored?.settings || getDefaultSettings();
-  });
-
-  const [schedule, setSchedule] = useState<Schedule | null>(() => {
-    const stored = loadFromStorage();
-    return stored?.schedule || null;
-  });
-
+function AppContent() {
+  const { theme, setTheme, language, setLanguage, t } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('archive');
-  const [generationTime, setGenerationTime] = useState<number | null>(null);
-  const [currentTournamentId, setCurrentTournamentId] = useState<string | null>(null);
-  const [currentTournamentName, setCurrentTournamentName] = useState<string>('');
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [archiveKey, setArchiveKey] = useState(0);
 
-  // Persistenz: Speichere bei Änderungen
+  // Auth-State beobachten
   useEffect(() => {
-    saveToStorage(settings, schedule);
-  }, [settings, schedule]);
+    const unsubscribe = onAuthChange((user) => setAuthUser(user));
+    return unsubscribe;
+  }, []);
 
-  // Berechne Statistiken
-  const playerStats = useMemo(() => {
-    return calculatePlayerStats(settings.players, schedule, settings.pointSettings);
-  }, [settings.players, schedule, settings.pointSettings]);
+  // Pending-Action für das Modal (wird gesetzt, wenn unsaved changes + Wechsel)
+  const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
 
-  // Analysiere Turnierplan (für Debug-Info)
-  const scheduleAnalysis = useMemo(() => {
-    if (!schedule) return null;
-    return analyzeSchedule(schedule, settings.players);
-  }, [schedule, settings.players]);
+  const {
+    settings,
+    setSettings,
+    schedule,
+    generationTime,
+    currentTournamentId,
+    currentTournamentName,
+    hasUnsavedChanges,
+    playerStats,
+    scheduleAnalysis,
+    handleGenerate,
+    handleReset,
+    handleNewTournament,
+    handleLoadTournament,
+    handleScoreChange,
+    handlePDFExport,
+    quickSave,
+    saveAsNew,
+    markAsSaved,
+  } = useTournament();
 
-  // Handler: Generiere Turnierplan
-  const handleGenerate = useCallback(() => {
-    const validation = validateSettings(settings);
-    if (!validation.isValid) {
-      alert('Bitte behebe zuerst die Validierungsfehler.');
-      return;
-    }
+  // Prüft unsaved changes, zeigt Modal oder führt Aktion direkt aus
+  const withUnsavedCheck = useCallback(
+    (action: () => void) => {
+      if (hasUnsavedChanges) {
+        setPendingAction(() => action);
+      } else {
+        action();
+      }
+    },
+    [hasUnsavedChanges]
+  );
 
-    const startTime = performance.now();
-    const newSchedule = generateSchedule(settings);
-    const endTime = performance.now();
+  function onGenerate() {
+    const newSchedule = handleGenerate();
+    if (newSchedule) setActiveTab('schedule');
+  }
 
-    setSchedule(newSchedule);
-    setGenerationTime(Math.round(endTime - startTime));
-    setActiveTab('schedule');
-  }, [settings]);
-
-  // Handler: Reset
-  const handleReset = useCallback(() => {
-    if (schedule && !confirm('Turnierplan und alle Ergebnisse werden gelöscht. Fortfahren?')) {
-      return;
-    }
-    
-    clearStorage();
-    setSettings(getDefaultSettings());
-    setSchedule(null);
-    setGenerationTime(null);
-    setCurrentTournamentId(null);
-    setCurrentTournamentName('');
+  function onReset() {
+    handleReset();
     setActiveTab('settings');
-  }, [schedule]);
+  }
 
-  // Handler: Turnier laden
-  const handleLoadTournament = useCallback((
+  function onNewTournament() {
+    withUnsavedCheck(() => {
+      handleNewTournament();
+      setActiveTab('settings');
+    });
+  }
+
+  function onLoadTournament(
     loadedSettings: Settings,
     loadedSchedule: Schedule | null,
     id: string,
     name: string
-  ) => {
-    setSettings(loadedSettings);
-    setSchedule(loadedSchedule);
-    setCurrentTournamentId(id);
-    setCurrentTournamentName(name);
-    setActiveTab(loadedSchedule ? 'schedule' : 'settings');
-  }, []);
+  ) {
+    withUnsavedCheck(() => {
+      handleLoadTournament(loadedSettings, loadedSchedule, id, name);
+      setActiveTab(loadedSchedule ? 'schedule' : 'settings');
+    });
+  }
 
-  // Handler: Neues Turnier
-  const handleNewTournament = useCallback(() => {
-    if (schedule && !confirm('Ungespeicherte Änderungen gehen verloren. Fortfahren?')) {
-      return;
+  // Modal: Speichern & dann Pending-Action ausführen
+  async function handleModalSave(newName?: string) {
+    if (newName) {
+      await saveAsNew(newName);
+    } else {
+      await quickSave();
     }
-    
-    clearStorage();
-    setSettings(getDefaultSettings());
-    setSchedule(null);
-    setGenerationTime(null);
-    setCurrentTournamentId(null);
-    setCurrentTournamentName('');
-    setActiveTab('settings');
-  }, [schedule]);
+    pendingAction?.();
+    setPendingAction(null);
+  }
 
-  // Handler: Score-Eingabe
-  const handleScoreChange = useCallback((
-    matchId: string,
-    scoreA: number | null,
-    scoreB: number | null,
-    scorersA?: Record<string, number>,
-    scorersB?: Record<string, number>
-  ) => {
-    if (!schedule) return;
+  // Modal: Verwerfen & Pending-Action ausführen
+  function handleModalDiscard() {
+    pendingAction?.();
+    setPendingAction(null);
+  }
 
-    const newSchedule: Schedule = {
-      ...schedule,
-      rounds: schedule.rounds.map(round => ({
-        ...round,
-        matches: round.matches.map(match => 
-          match.id === matchId
-            ? { 
-                ...match, 
-                scoreA, 
-                scoreB,
-                ...(scorersA !== undefined && { scorersA }),
-                ...(scorersB !== undefined && { scorersB })
-              }
-            : match
-        ),
-      })),
-    };
-
-    setSchedule(newSchedule);
-  }, [schedule]);
+  // Quick-Save aus der Status-Bar
+  async function handleQuickSave(name?: string) {
+    if (currentTournamentId) {
+      await quickSave();
+    } else if (name) {
+      await saveAsNew(name);
+    }
+  }
 
   return (
-    <div className="app">
+    <div className="app" data-theme={theme}>
+      {/* Unsaved Changes Modal */}
+      {pendingAction && (
+        <UnsavedChangesModal
+          tournamentName={currentTournamentName}
+          hasSavedId={!!currentTournamentId}
+          onSave={handleModalSave}
+          onDiscard={handleModalDiscard}
+          onCancel={() => setPendingAction(null)}
+        />
+      )}
+
       {/* Header */}
       <header className="app-header">
-        <h1>🏆 Holländisches Turnier</h1>
-        <p className="subtitle">
-          Turnierplan-Generator mit rotierenden Teams
-          {currentTournamentName && (
-            <span className="current-tournament-name"> — {currentTournamentName}</span>
+        <div className="header-main">
+          <h1>🏆 {t('appTitle')}</h1>
+          <p className="subtitle">{t('appSubtitle')}</p>
+        </div>
+
+        <div className="header-controls">
+          <button
+            type="button"
+            className="header-button"
+            onClick={() => setLanguage(language === 'de' ? 'en' : 'de')}
+            title={t('language')}
+          >
+            {language === 'de' ? '🇩🇪' : '🇬🇧'}
+          </button>
+
+          <button
+            type="button"
+            className="header-button"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            title={t('theme')}
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+
+          {schedule && (
+            <button
+              type="button"
+              className="header-button"
+              onClick={handlePDFExport}
+              title={t('pdfExport')}
+            >
+              📄
+            </button>
           )}
-        </p>
+
+          <AuthButton
+            user={authUser}
+            onAuthChange={() => setArchiveKey(k => k + 1)}
+          />
+        </div>
       </header>
+
+      {/* Turnier-Status-Bar */}
+      <TournamentStatusBar
+        name={currentTournamentName}
+        hasUnsavedChanges={hasUnsavedChanges}
+        hasSavedId={!!currentTournamentId}
+        onQuickSave={handleQuickSave}
+      />
 
       {/* Tab Navigation */}
       <nav className="tab-nav">
@@ -167,14 +194,14 @@ function App() {
           className={`tab-button ${activeTab === 'archive' ? 'active' : ''}`}
           onClick={() => setActiveTab('archive')}
         >
-          📁 Archiv
+          📁 {t('archive')}
         </button>
         <button
           type="button"
           className={`tab-button ${activeTab === 'settings' ? 'active' : ''}`}
           onClick={() => setActiveTab('settings')}
         >
-          ⚙️ Einstellungen
+          ⚙️ {t('settings')}
         </button>
         <button
           type="button"
@@ -182,35 +209,37 @@ function App() {
           onClick={() => setActiveTab('schedule')}
           disabled={!schedule}
         >
-          📅 Spielplan
+          📅 {t('schedule')}
         </button>
         <button
           type="button"
           className={`tab-button ${activeTab === 'players' ? 'active' : ''}`}
           onClick={() => setActiveTab('players')}
         >
-          📊 Statistiken
+          📊 {t('statistics')}
         </button>
       </nav>
 
-      {/* Export Buttons (nur wenn Schedule existiert) */}
+      {/* Export-Leiste */}
       {schedule && activeTab !== 'archive' && (
-        <ExportButtons 
-          schedule={schedule} 
-          players={settings.players} 
-          stats={playerStats} 
+        <ExportButtons
+          schedule={schedule}
+          players={settings.players}
+          stats={playerStats}
         />
       )}
 
-      {/* Tab Content */}
+      {/* Tab-Inhalt */}
       <main className="tab-content">
         {activeTab === 'archive' && (
           <TournamentArchive
+            key={archiveKey}
             currentSettings={settings}
             currentSchedule={schedule}
             currentTournamentId={currentTournamentId}
-            onLoadTournament={handleLoadTournament}
-            onNewTournament={handleNewTournament}
+            onLoadTournament={onLoadTournament}
+            onNewTournament={onNewTournament}
+            onSaved={markAsSaved}
           />
         )}
 
@@ -218,8 +247,8 @@ function App() {
           <SettingsForm
             settings={settings}
             onSettingsChange={setSettings}
-            onGenerate={handleGenerate}
-            onReset={handleReset}
+            onGenerate={onGenerate}
+            onReset={onReset}
             hasSchedule={!!schedule}
           />
         )}
@@ -234,15 +263,15 @@ function App() {
         )}
 
         {activeTab === 'players' && (
-          <PlayersTab 
-            stats={playerStats} 
+          <PlayersTab
+            stats={playerStats}
             schedule={schedule}
             pointSettings={settings.pointSettings}
           />
         )}
       </main>
 
-      {/* Footer mit Generation-Info */}
+      {/* Footer */}
       {schedule && (
         <footer className="app-footer">
           <div className="generation-info">
@@ -253,13 +282,13 @@ function App() {
             {scheduleAnalysis && (
               <>
                 <span title="Wie oft Spieler zusammen im Team waren">
-                  👥 Mitspieler: {scheduleAnalysis.teammateStats.min}-{scheduleAnalysis.teammateStats.max}×
+                  👥 Mitspieler: {scheduleAnalysis.teammateStats.min}–{scheduleAnalysis.teammateStats.max}×
                 </span>
                 <span title="Wie oft Spieler gegeneinander gespielt haben">
-                  ⚔️ Gegner: {scheduleAnalysis.opponentStats.min}-{scheduleAnalysis.opponentStats.max}×
+                  ⚔️ Gegner: {scheduleAnalysis.opponentStats.min}–{scheduleAnalysis.opponentStats.max}×
                 </span>
                 <span title="Anzahl Spiele pro Spieler">
-                  🎮 Einsätze: {scheduleAnalysis.gamesPlayedStats.min}-{scheduleAnalysis.gamesPlayedStats.max}
+                  🎮 Einsätze: {scheduleAnalysis.gamesPlayedStats.min}–{scheduleAnalysis.gamesPlayedStats.max}
                 </span>
               </>
             )}
@@ -270,4 +299,89 @@ function App() {
   );
 }
 
-export default App;
+// ============================================
+// Turnier-Status-Bar
+// ============================================
+interface StatusBarProps {
+  name: string;
+  hasUnsavedChanges: boolean;
+  hasSavedId: boolean;
+  onQuickSave: (name?: string) => void;
+}
+
+function TournamentStatusBar({ name, hasUnsavedChanges, hasSavedId, onQuickSave }: StatusBarProps) {
+  const [showNamePrompt, setShowNamePrompt] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+
+  function handleSaveClick() {
+    if (hasSavedId) {
+      onQuickSave();
+    } else {
+      setNameInput(name || `Turnier ${new Date().toLocaleDateString('de-DE')}`);
+      setShowNamePrompt(true);
+    }
+  }
+
+  function confirmNewName() {
+    if (nameInput.trim()) {
+      onQuickSave(nameInput.trim());
+      setShowNamePrompt(false);
+    }
+  }
+
+  return (
+    <div className={`tournament-status-bar${hasUnsavedChanges ? ' has-unsaved' : ''}`}>
+      <div className="status-bar-info">
+        <span className="status-bar-label">📂 Aktuelles Turnier:</span>
+        <span className="status-bar-name">
+          {name || 'Neues Turnier'}
+        </span>
+        {hasUnsavedChanges ? (
+          <span className="status-bar-badge unsaved">● Ungespeichert</span>
+        ) : (
+          <span className="status-bar-badge saved">✓ Gespeichert</span>
+        )}
+      </div>
+
+      {hasUnsavedChanges && (
+        <div className="status-bar-actions">
+          {showNamePrompt ? (
+            <>
+              <input
+                className="status-bar-input"
+                type="text"
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmNewName();
+                  if (e.key === 'Escape') setShowNamePrompt(false);
+                }}
+                autoFocus
+                placeholder="Turniername..."
+              />
+              <button type="button" className="btn-save-now" onClick={confirmNewName}>
+                ✓
+              </button>
+              <button type="button" className="btn-cancel-save" onClick={() => setShowNamePrompt(false)}>
+                ✕
+              </button>
+            </>
+          ) : (
+            <button type="button" className="btn-save-now" onClick={handleSaveClick}>
+              💾 Jetzt speichern
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AppProvider>
+      <AppContent />
+    </AppProvider>
+  );
+}
+

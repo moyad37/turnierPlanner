@@ -11,6 +11,7 @@ import type {
   Player,
   PairingHistory,
   FairnessMode,
+  AgeGroupSettings,
 } from '../types';
 
 // Seeded Random Number Generator (Mulberry32)
@@ -125,11 +126,13 @@ function calculateTeamPenalty(
   return penalty;
 }
 
-// Berechne Penalty für Match (Opponent-Wiederholungen)
+// Berechne Penalty für Match (Opponent-Wiederholungen + Altersgruppen-Mismatch)
 function calculateMatchPenalty(
   teamA: string[],
   teamB: string[],
-  history: PairingHistory
+  history: PairingHistory,
+  allPlayers?: Player[],
+  ageGroupSettings?: AgeGroupSettings
 ): number {
   let penalty = 0;
 
@@ -138,6 +141,38 @@ function calculateMatchPenalty(
       const key = makePairKey(p1, p2);
       const count = history.opponentCount.get(key) || 0;
       penalty += count * count;
+    }
+  }
+
+  // Altersgruppen-Penalty: Vermeide Spiele mit großem Altersunterschied zwischen Teams
+  if (ageGroupSettings?.enabled && allPlayers) {
+    const maxDiff = ageGroupSettings.maxAgeDifference;
+
+    const agesA = teamA
+      .map(id => allPlayers.find(p => p.id === id)?.age)
+      .filter((age): age is number => typeof age === 'number');
+    const agesB = teamB
+      .map(id => allPlayers.find(p => p.id === id)?.age)
+      .filter((age): age is number => typeof age === 'number');
+
+    if (agesA.length > 0 && agesB.length > 0) {
+      const avgAgeA = agesA.reduce((a, b) => a + b, 0) / agesA.length;
+      const avgAgeB = agesB.reduce((a, b) => a + b, 0) / agesB.length;
+      const avgAgeDiff = Math.abs(avgAgeA - avgAgeB);
+
+      if (avgAgeDiff > maxDiff) {
+        // Hohe Strafe proportional zur Überschreitung: Generator meidet diese Paarung stark
+        penalty += (avgAgeDiff - maxDiff) * 10000;
+      }
+
+      // Zusätzliche Strafe für jeden direkten Gegner-Pairing mit zu großem Altersunterschied
+      for (const ageA of agesA) {
+        for (const ageB of agesB) {
+          if (Math.abs(ageA - ageB) > maxDiff) {
+            penalty += 2000;
+          }
+        }
+      }
     }
   }
 
@@ -264,7 +299,9 @@ function pairTeamsToMatches(
   roundIndex: number,
   fieldsCount: number,
   history: PairingHistory,
-  random: () => number
+  random: () => number,
+  allPlayers?: Player[],
+  ageGroupSettings?: AgeGroupSettings
 ): Match[] {
   const matches: Match[] = [];
   const availableTeams = [...teams];
@@ -280,7 +317,9 @@ function pairTeamsToMatches(
         const penalty = calculateMatchPenalty(
           availableTeams[i].playerIds,
           availableTeams[j].playerIds,
-          history
+          history,
+          allPlayers,
+          ageGroupSettings
         ) + random() * 0.1;
 
         if (penalty < bestPenalty) {
@@ -317,6 +356,36 @@ function pairTeamsToMatches(
   }
 
   return matches;
+}
+
+// Verteile überschüssige Spieler als Auswechselspieler (fair rotierend)
+function assignSubstitutes(
+  teams: Team[],
+  activePlayers: Player[],
+  history: PairingHistory,
+  random: () => number
+): void {
+  const assignedIds = new Set(teams.flatMap(t => t.playerIds));
+  const extras = activePlayers.filter(p => !assignedIds.has(p.id));
+
+  if (extras.length === 0) return;
+
+  // Bevorzuge Spieler mit weniger bisherigen Einsätzen für faire Rotation
+  extras.sort((a, b) => {
+    const ga = history.gamesPlayed.get(a.id) || 0;
+    const gb = history.gamesPlayed.get(b.id) || 0;
+    return ga !== gb ? ga - gb : random() - 0.5;
+  });
+
+  extras.forEach((player, i) => {
+    const teamIndex = i % teams.length;
+    if (!teams[teamIndex].substitutePlayerIds) {
+      teams[teamIndex].substitutePlayerIds = [];
+    }
+    teams[teamIndex].substitutePlayerIds!.push(player.id);
+    // Auch Auswechselspieler als "gespielt" zählen für faire Folge-Runden
+    history.gamesPlayed.set(player.id, (history.gamesPlayed.get(player.id) || 0) + 1);
+  });
 }
 
 // Hauptfunktion: Generiere Turnierplan
@@ -361,8 +430,13 @@ export function generateSchedule(settings: Settings): Schedule {
       distributeGoalkeepers
     );
 
+    // Verteile überschüssige Spieler als Auswechselspieler (wenn allowByes = false)
+    if (!allowByes) {
+      assignSubstitutes(teams, activePlayers, history, random);
+    }
+
     // Paare Teams zu Matches
-    const matches = pairTeamsToMatches(teams, roundIndex, fieldsCount, history, random);
+    const matches = pairTeamsToMatches(teams, roundIndex, fieldsCount, history, random, players, settings.ageGroupSettings);
 
     // Update History
     updateHistory(history, matches);

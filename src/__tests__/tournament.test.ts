@@ -30,6 +30,13 @@ function createTestSettings(overrides: Partial<Settings> = {}): Settings {
     seed: 12345,
     pointSettings: getDefaultPointSettings(),
     distributeGoalkeepers: true,
+    tournamentMode: 'standard',
+    matchDuration: 10,
+    useSkillBalancing: false,
+    handicapSettings: { enabled: false, skillDifferenceMultiplier: 0.5 },
+    playoffSettings: { enabled: false, topPlayersCount: 8, playoffRounds: 3 },
+    teamColors: ['red', 'blue'],
+    ageGroupSettings: { enabled: false, maxAgeDifference: 5 },
     ...overrides,
   };
 }

@@ -2,8 +2,9 @@
 // useTournament Hook - Turnier-State & Handler
 // ============================================
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { Settings, Schedule } from '../types';
+import type { LiveResult } from '../types/session';
 import { generateSchedule, analyzeSchedule } from '../lib/generator';
 import { calculatePlayerStats } from '../lib/stats';
 import { validateSettings } from '../lib/validation';
@@ -14,9 +15,9 @@ import {
   clearStorage,
 } from '../lib/storage';
 import { saveTournament } from '../lib/cloudArchive';
-import { exportToPDF } from '../lib/pdfExport';
 
 export function useTournament() {
+  // Einmal lesen – verhindert doppelten localStorage-Zugriff beim Init
   const [settings, setSettings] = useState<Settings>(() => {
     const stored = loadFromStorage();
     return stored?.settings ?? getDefaultSettings();
@@ -27,6 +28,8 @@ export function useTournament() {
     return stored?.schedule ?? null;
   });
 
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
   const [generationTime, setGenerationTime] = useState<number | null>(null);
   const [currentTournamentId, setCurrentTournamentId] = useState<string | null>(null);
   const [currentTournamentName, setCurrentTournamentName] = useState<string>('');
@@ -34,9 +37,11 @@ export function useTournament() {
   // Dirty-Tracking: true nur bei echten Nutzer-Änderungen (nicht bei Load/Reset)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
-  // Persistenz: Speichere bei jeder Änderung
+  // Persistenz: Debounced (500 ms) – spart bei schnellen Remote-Updates
   useEffect(() => {
-    saveToStorage(settings, schedule);
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => saveToStorage(settings, schedule), 500);
+    return () => clearTimeout(saveTimerRef.current);
   }, [settings, schedule]);
 
   // Berechnete Statistiken
@@ -134,6 +139,71 @@ export function useTournament() {
     setHasUnsavedChanges(false);
   }, []);
 
+  /**
+   * Wendet ALLE Remote-Ergebnisse auf einmal an (einziger setSchedule-Aufruf).
+   * Sorgt für sofortiges Real-time-Update ohne Render-Batching-Probleme.
+   */
+  const applyAllRemoteResults = useCallback((results: LiveResult[]) => {
+    if (results.length === 0) return;
+    setSchedule((prev) => {
+      if (!prev) return prev;
+      const map = new Map(
+        results.map((r) => [`${r.roundIndex}_${r.matchIndex}`, r])
+      );
+      return {
+        ...prev,
+        rounds: prev.rounds.map((round) => ({
+          ...round,
+          matches: round.matches.map((match) => {
+            const r = map.get(`${match.roundIndex}_${match.matchIndex}`);
+            if (!r) return match;
+            return {
+              ...match,
+              scoreA: r.scoreA,
+              scoreB: r.scoreB,
+              scorersA: r.scorersA,
+              scorersB: r.scorersB,
+            };
+          }),
+        })),
+      };
+    });
+  }, []);
+
+  /**
+   * Wendet ein von einem Remote-Gerät eingetragenes Ergebnis an,
+   * ohne hasUnsavedChanges zu setzen.
+   */
+  const applyRemoteResult = useCallback(
+    (
+      roundIndex: number,
+      matchIndex: number,
+      scoreA: number,
+      scoreB: number,
+      scorersA: Record<string, number>,
+      scorersB: Record<string, number>
+    ) => {
+      setSchedule((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          rounds: prev.rounds.map((round) => {
+            if (round.index !== roundIndex) return round;
+            return {
+              ...round,
+              matches: round.matches.map((match) =>
+                match.matchIndex !== matchIndex
+                  ? match
+                  : { ...match, scoreA, scoreB, scorersA, scorersB }
+              ),
+            };
+          }),
+        };
+      });
+    },
+    []
+  );
+
   const handleScoreChange = useCallback(
     (
       matchId: string,
@@ -166,13 +236,16 @@ export function useTournament() {
   );
 
   const handlePDFExport = useCallback(() => {
-    exportToPDF({
-      players: settings.players,
-      schedule,
-      stats: playerStats,
-      settings,
-      tournamentName: currentTournamentName || 'Turnier',
-      date: new Date().toLocaleDateString('de-DE'),
+    // Dynamischer Import: PDF-Bibliothek nur bei Bedarf laden
+    import('../lib/pdfExport').then(({ exportToPDF }) => {
+      exportToPDF({
+        players: settings.players,
+        schedule,
+        stats: playerStats,
+        settings,
+        tournamentName: currentTournamentName || 'Turnier',
+        date: new Date().toLocaleDateString('de-DE'),
+      });
     });
   }, [settings, schedule, playerStats, currentTournamentName]);
 
@@ -194,6 +267,8 @@ export function useTournament() {
     handleNewTournament,
     handleLoadTournament,
     handleScoreChange,
+    applyRemoteResult,
+    applyAllRemoteResults,
     handlePDFExport,
     quickSave,
     saveAsNew,

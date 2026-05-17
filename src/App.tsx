@@ -2,9 +2,10 @@
 // Holländisches Turnier - Hauptkomponente
 // ============================================
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { AppProvider, useApp } from './contexts/AppContext';
 import { useTournament } from './hooks/useTournament';
+import { useLiveSession } from './hooks/useLiveSession';
 import { SettingsForm } from './components/SettingsForm';
 import { ScheduleTab } from './components/ScheduleTab';
 import { PlayersTab } from './components/PlayersTab';
@@ -12,10 +13,32 @@ import { ExportButtons } from './components/ExportButtons';
 import { TournamentArchive } from './components/TournamentArchive';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import { AuthButton } from './components/AuthButton';
+import { SessionPanel } from './components/session/SessionPanel';
+import { SubDeviceApp } from './components/SubDeviceApp';
 import { onAuthChange } from './lib/firebase';
 import type { User } from 'firebase/auth';
 import type { Settings, Schedule } from './types';
 import './App.css';
+
+/** Liest den ?session= URL-Parameter (Sub-Gerät-Modus). */
+function getSessionIdFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get('session');
+}
+
+/** Findet roundIndex + matchIndex anhand der Match-ID. */
+function findMatchIndices(
+  schedule: Schedule,
+  matchId: string
+): { roundIndex: number; matchIndex: number } | null {
+  for (const round of schedule.rounds) {
+    for (const match of round.matches) {
+      if (match.id === matchId) {
+        return { roundIndex: round.index, matchIndex: match.matchIndex };
+      }
+    }
+  }
+  return null;
+}
 
 type TabType = 'archive' | 'settings' | 'schedule' | 'players';
 
@@ -24,6 +47,7 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<TabType>('archive');
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [archiveKey, setArchiveKey] = useState(0);
+  const [showSessionPanel, setShowSessionPanel] = useState(false);
 
   // Auth-State beobachten
   useEffect(() => {
@@ -49,11 +73,65 @@ function AppContent() {
     handleNewTournament,
     handleLoadTournament,
     handleScoreChange,
+    applyAllRemoteResults,
     handlePDFExport,
     quickSave,
     saveAsNew,
     markAsSaved,
   } = useTournament();
+
+  // ── Live-Session (Admin) ──
+  const {
+    session,
+    devices,
+    isStarting,
+    startError,
+    deviceId: adminDeviceId,
+    startSession,
+    stopSession,
+    syncSchedule,
+    updateDefaultPermissions,
+    updateDevicePerms,
+    revokeDevice,
+    restoreDevice,
+    submitAdminResult,
+  } = useLiveSession({ onRemoteResults: applyAllRemoteResults });
+
+  // Spielplan mit Session synchronisieren (debounced 1 s, spart Firestore-Writes)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    if (!session || !schedule) return;
+    clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => syncSchedule(schedule), 1000);
+    return () => clearTimeout(syncTimerRef.current);
+  }, [schedule]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Ergebnis eintragen – lokal + wenn Session aktiv auch zu Firestore */
+  const handleScoreChangeWithSync = useCallback(
+    (
+      matchId: string,
+      scoreA: number | null,
+      scoreB: number | null,
+      scorersA?: Record<string, number>,
+      scorersB?: Record<string, number>
+    ) => {
+      handleScoreChange(matchId, scoreA, scoreB, scorersA, scorersB);
+      if (session && scoreA !== null && scoreB !== null && schedule) {
+        const idx = findMatchIndices(schedule, matchId);
+        if (idx) {
+          submitAdminResult(
+            idx.roundIndex,
+            idx.matchIndex,
+            scoreA,
+            scoreB,
+            scorersA,
+            scorersB
+          );
+        }
+      }
+    },
+    [handleScoreChange, session, schedule, submitAdminResult]
+  );
 
   // Prüft unsaved changes, zeigt Modal oder führt Aktion direkt aus
   const withUnsavedCheck = useCallback(
@@ -172,12 +250,42 @@ function AppContent() {
             </button>
           )}
 
+          <button
+            type="button"
+            className={`header-button${session ? ' session-active' : ''}`}
+            onClick={() => setShowSessionPanel(true)}
+            title="Live-Session (Mehrere Geräte)"
+          >
+            📡{session ? ' LIVE' : ''}
+          </button>
+
           <AuthButton
             user={authUser}
             onAuthChange={() => setArchiveKey(k => k + 1)}
           />
         </div>
       </header>
+
+      {/* Live-Session Panel */}
+      {showSessionPanel && (
+        <SessionPanel
+          session={session}
+          devices={devices}
+          isStarting={isStarting}
+          startError={startError}
+          adminDeviceId={adminDeviceId}
+          settings={settings}
+          schedule={schedule}
+          tournamentName={currentTournamentName || 'Turnier'}
+          onStartSession={startSession}
+          onStopSession={stopSession}
+          onUpdateDefaultPermissions={updateDefaultPermissions}
+          onUpdateDevicePermissions={updateDevicePerms}
+          onRevokeDevice={revokeDevice}
+          onRestoreDevice={restoreDevice}
+          onClose={() => setShowSessionPanel(false)}
+        />
+      )}
 
       {/* Turnier-Status-Bar */}
       <TournamentStatusBar
@@ -258,7 +366,7 @@ function AppContent() {
             schedule={schedule}
             players={settings.players}
             pointSettings={settings.pointSettings}
-            onScoreChange={handleScoreChange}
+            onScoreChange={handleScoreChangeWithSync}
           />
         )}
 
@@ -378,6 +486,16 @@ function TournamentStatusBar({ name, hasUnsavedChanges, hasSavedId, onQuickSave 
 }
 
 export default function App() {
+  // Sub-Gerät-Modus: URL-Parameter prüfen (außerhalb der Hook-Kette)
+  const urlSessionId = getSessionIdFromUrl();
+  if (urlSessionId) {
+    return (
+      <AppProvider>
+        <SubDeviceApp initialSessionId={urlSessionId} />
+      </AppProvider>
+    );
+  }
+
   return (
     <AppProvider>
       <AppContent />

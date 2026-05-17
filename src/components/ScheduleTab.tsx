@@ -2,7 +2,7 @@
 // Schedule Tab Komponente
 // ============================================
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import type { Schedule, Player, Match, PointSettings } from '../types';
 import { countPlayedMatches, getRoundStats } from '../lib/stats';
 
@@ -58,19 +58,19 @@ const ScorerInput: React.FC<{
   );
 };
 
-// Match-Komponente mit Score-Eingabe
-const MatchRow: React.FC<{
+// Match-Komponente mit Score-Eingabe – React.memo verhindert Re-Render wenn Match sich nicht ändert
+const MatchRow = React.memo<{
   match: Match;
   players: Player[];
   enableScorerPoints: boolean;
   onScoreChange: (
-    matchId: string, 
-    scoreA: number | null, 
+    matchId: string,
+    scoreA: number | null,
     scoreB: number | null,
     scorersA?: Record<string, number>,
     scorersB?: Record<string, number>
   ) => void;
-}> = ({ match, players, enableScorerPoints, onScoreChange }) => {
+}>(({ match, players, enableScorerPoints, onScoreChange }) => {
   const [localScoreA, setLocalScoreA] = useState<string>(
     match.scoreA !== null ? String(match.scoreA) : ''
   );
@@ -84,6 +84,17 @@ const MatchRow: React.FC<{
   const [scorersB, setScorersB] = useState<Record<string, number>>(
     match.scorersB || {}
   );
+
+  // Wenn ein Remote-Gerät ein Ergebnis einträgt, lokalen State synchronisieren
+  useEffect(() => {
+    setLocalScoreA(match.scoreA !== null ? String(match.scoreA) : '');
+    setLocalScoreB(match.scoreB !== null ? String(match.scoreB) : '');
+  }, [match.scoreA, match.scoreB]);
+
+  useEffect(() => {
+    setScorersA(match.scorersA || {});
+    setScorersB(match.scorersB || {});
+  }, [match.scorersA, match.scorersB]);
 
   const handleScoreAChange = useCallback((value: string) => {
     setLocalScoreA(value);
@@ -246,7 +257,7 @@ const MatchRow: React.FC<{
       )}
     </>
   );
-};
+});
 
 export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   schedule,

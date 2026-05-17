@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Bestehende User-Turniere: nur der eigene User
+    match /users/{userId}/tournaments/{tournamentId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Live-Sessions
+    match /liveSessions/{sessionId} {
+
+      // Jeder kann die Session lesen (Sub-Geräte brauchen Schedule + Settings)
+      allow read: if true;
+
+      // Nur eingeloggte Benutzer können eine Session erstellen
+      allow create: if request.auth != null;
+
+      // Nur der Admin kann die Session selbst updaten/löschen
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.adminUid;
+
+      // Geräte-Subcollection
+      match /devices/{deviceId} {
+        allow read: if true;
+
+        // Jeder kann sich als Gerät registrieren (create)
+        allow create: if true;
+
+        // Admin kann alle Geräte updaten (Berechtigungen, Status)
+        // Gerät kann nur sein eigenes lastSeen-Feld updaten
+        allow update: if
+          (request.auth != null
+            && get(/databases/$(database)/documents/liveSessions/$(sessionId)).data.adminUid == request.auth.uid)
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeen']);
+
+        // Nur Admin kann Geräte löschen
+        allow delete: if request.auth != null
+          && get(/databases/$(database)/documents/liveSessions/$(sessionId)).data.adminUid == request.auth.uid;
+      }
+
+      // Ergebnis-Subcollection: Sub-Geräte tragen hier Ergebnisse ein
+      match /results/{matchKey} {
+        allow read: if true;
+
+        allow write: if
+          // Admin darf immer schreiben
+          (request.auth != null
+            && get(/databases/$(database)/documents/liveSessions/$(sessionId)).data.adminUid == request.auth.uid)
+          // Sub-Gerät darf schreiben wenn:
+          // - Session aktiv ist
+          // - Gerät registriert und aktiv ist
+          || (
+            get(/databases/$(database)/documents/liveSessions/$(sessionId)).data.status == 'active'
+            && exists(/databases/$(database)/documents/liveSessions/$(sessionId)/devices/$(request.resource.data.deviceId))
+            && get(/databases/$(database)/documents/liveSessions/$(sessionId)/devices/$(request.resource.data.deviceId)).data.status == 'active'
+          );
+      }
+    }
+  }
+}
